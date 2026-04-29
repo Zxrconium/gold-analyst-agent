@@ -207,24 +207,7 @@ any_signal = signal_type != ""
 // Alert message is sent as JSON to your Flask server.
 
 if any_signal
-    payload = "{" +
-        '"ticker":"'          + syminfo.ticker                   + '",' +
-        '"price":'            + str.tostring(close,   "#.##")   + ','  +
-        '"poc":'              + str.tostring(poc,     "#.##")   + ','  +
-        '"vah":'              + str.tostring(vah,     "#.##")   + ','  +
-        '"val":'              + str.tostring(val,     "#.##")   + ','  +
-        '"cvd":'              + str.tostring(cvd,     "#.##")   + ','  +
-        '"cvd_trend":"'       + cvd_trend                       + '",' +
-        '"volume":'           + str.tostring(volume,  "#")      + ','  +
-        '"avg_volume":'       + str.tostring(avg_vol, "#.##")   + ','  +
-        '"balance_state":"'   + balance_state                   + '",' +
-        '"signal_type":"'     + signal_type                     + '",' +
-        '"absorption":'       + str.tostring(absorption)        + ','  +
-        '"delta_divergence":"'+ delta_divergence                + '",' +
-        '"hvn_near":'         + str.tostring(hvn_near)          + ','  +
-        '"lvn_near":'         + str.tostring(lvn_near)          + ','  +
-        '"timeframe":"'       + timeframe.period                + '"'  +
-        "}"
+    payload = '{"ticker":"' + syminfo.ticker + '","price":' + str.tostring(close, "#.##") + ',"poc":' + str.tostring(poc, "#.##") + ',"vah":' + str.tostring(vah, "#.##") + ',"val":' + str.tostring(val, "#.##") + ',"cvd":' + str.tostring(cvd, "#.##") + ',"cvd_trend":"' + cvd_trend + '","volume":' + str.tostring(volume, "#") + ',"avg_volume":' + str.tostring(avg_vol, "#.##") + ',"balance_state":"' + balance_state + '","signal_type":"' + signal_type + '","absorption":' + str.tostring(absorption) + ',"delta_divergence":"' + delta_divergence + '","hvn_near":' + str.tostring(hvn_near) + ',"lvn_near":' + str.tostring(lvn_near) + ',"timeframe":"' + timeframe.period + '"}'
     alert(payload, alert.freq_once_per_bar_close)
 
 // --- VISUAL OVERLAYS ---------------------------------------------------------
