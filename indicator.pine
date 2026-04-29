@@ -155,17 +155,7 @@ for i = 0 to vp_lookback - 1
 
 imbalance_threshold = int(vp_lookback * 0.6)
 
-var string balance_state = "in_balance"
-if bars_above_vah >= imbalance_threshold
-    balance_state := "imbalanced_bullish"
-else if bars_below_val >= imbalance_threshold
-    balance_state := "imbalanced_bearish"
-else if close > vah and close[1] <= vah[1]
-    balance_state := "breaking_high"
-else if close < val and close[1] >= val[1]
-    balance_state := "breaking_low"
-else
-    balance_state := "in_balance"
+balance_state = bars_above_vah >= imbalance_threshold ? "imbalanced_bullish" : bars_below_val >= imbalance_threshold ? "imbalanced_bearish" : close > vah and close[1] <= vah[1] ? "breaking_high" : close < val and close[1] >= val[1] ? "breaking_low" : "in_balance"
 
 // --- DELTA DIVERGENCE --------------------------------------------------------
 // Price makes new high but CVD doesn't confirm -> bearish divergence
