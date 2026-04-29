@@ -1,0 +1,367 @@
+// ============================================================================
+// Gold Futures AMT Analyst — Fabervaale Framework
+// Author  : Built for Fabervaale (Fabio Valentini) methodology
+// Markets : XAUUSD / GC1! (Gold Futures)
+// Concepts: Auction Market Theory, Volume Profile, Order Flow, CVD
+//
+// What it does:
+//   1. Approximates a session Volume Profile (POC, VAH, VAL)
+//   2. Calculates Cumulative Volume Delta (CVD) from bar OHLC estimation
+//   3. Detects Balance vs Imbalance state
+//   4. Classifies Initiative vs Responsive activity
+//   5. Detects Absorption (high volume / low range)
+//   6. Detects Delta Divergence
+//   7. Fires a JSON webhook payload to your Python server
+//
+// IMPORTANT: TradingView's Pine Script does not give tick-level bid/ask data.
+//   CVD here uses an OHLC-based estimation (Upward-Close Volume fraction).
+//   For true tick CVD, pair this with a Bookmap or Sierra Chart feed.
+// ============================================================================
+
+//@version=5
+indicator(
+    title     = "Gold AMT Analyst — Fabervaale Framework",
+    shorttitle= "AMT Gold",
+    overlay   = true,
+    max_bars_back = 500
+)
+
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+
+// Volume Profile
+vp_lookback     = input.int(  50, "VP Lookback (bars)",         minval=10, maxval=200, group="Volume Profile")
+value_area_pct  = input.float(70, "Value Area %",               minval=50, maxval=95,  group="Volume Profile")
+vp_bins         = input.int(  24, "VP Price Bins",              minval=10, maxval=50,  group="Volume Profile")
+
+// CVD
+cvd_length      = input.int(  20, "CVD Smoothing Length",       minval=1,  maxval=50,  group="CVD")
+
+// Signal thresholds
+abs_vol_mult    = input.float(1.8, "Absorption Vol Multiplier", minval=1.0,maxval=5.0, group="Signals",
+                              tooltip="Bar volume must exceed avg × this to qualify as absorption")
+abs_range_pct   = input.float(0.3, "Absorption Range % of ATR", minval=0.1,maxval=1.0, group="Signals",
+                              tooltip="Bar range must be < this × ATR to qualify as absorption")
+div_lookback    = input.int(   5, "Delta Divergence Lookback",  minval=2,  maxval=20,  group="Signals")
+
+// Webhook
+webhook_url_placeholder = input.string(
+    "https://your-server.com/webhook?secret=YOUR_SECRET",
+    "Webhook URL (replace with your server URL)",
+    group="Webhook",
+    tooltip="Paste your ngrok / VPS URL here. Alerts → Message contains the JSON payload."
+)
+
+// Display
+show_poc        = input.bool(true,  "Show POC",  group="Display")
+show_vah_val    = input.bool(true,  "Show VAH/VAL", group="Display")
+show_cvd        = input.bool(true,  "Show CVD Panel", group="Display")
+show_signals    = input.bool(true,  "Show Signal Labels", group="Display")
+
+// ─── VOLUME PROFILE APPROXIMATION ────────────────────────────────────────────
+// We bucket the last `vp_lookback` bars into `vp_bins` price bins and
+// accumulate volume.  This is a fixed-range VP anchored to the lookback window.
+
+f_vp_levels() =>
+    // Price range of the lookback window
+    lo_range = ta.lowest(low,   vp_lookback)
+    hi_range = ta.highest(high, vp_lookback)
+    bin_size = (hi_range - lo_range) / vp_bins
+
+    // Accumulate volume per bin using an array
+    var float[] bin_vols = array.new_float(vp_bins, 0.0)
+    array.fill(bin_vols, 0.0)
+
+    for i = 0 to vp_lookback - 1
+        bar_mid  = (high[i] + low[i]) / 2
+        bin_idx  = int(math.min(math.floor((bar_mid - lo_range) / bin_size), vp_bins - 1))
+        if bin_idx >= 0
+            array.set(bin_vols, bin_idx, array.get(bin_vols, bin_idx) + volume[i])
+
+    // POC — bin with maximum volume
+    max_vol  = array.max(bin_vols)
+    poc_bin  = 0
+    for b = 0 to vp_bins - 1
+        if array.get(bin_vols, b) >= max_vol
+            poc_bin := b
+            break
+    poc_price = lo_range + (poc_bin + 0.5) * bin_size
+
+    // Value Area — expand outward from POC until `value_area_pct`% of volume captured
+    total_vol = array.sum(bin_vols)
+    target    = total_vol * (value_area_pct / 100)
+    captured  = array.get(bin_vols, poc_bin)
+    lo_bin    = poc_bin
+    hi_bin    = poc_bin
+
+    while captured < target and (lo_bin > 0 or hi_bin < vp_bins - 1)
+        lo_vol = lo_bin > 0           ? array.get(bin_vols, lo_bin - 1) : 0.0
+        hi_vol = hi_bin < vp_bins - 1 ? array.get(bin_vols, hi_bin + 1) : 0.0
+        if hi_vol >= lo_vol
+            hi_bin   := hi_bin + 1
+            captured += hi_vol
+        else
+            lo_bin   := lo_bin - 1
+            captured += lo_vol
+
+    vah_price = lo_range + (hi_bin + 1) * bin_size
+    val_price = lo_range + lo_bin       * bin_size
+
+    // HVN / LVN detection (simplified: bins in top/bottom quartile by volume)
+    vol_q75   = array.percentile_nearest_rank(bin_vols, 75)
+    vol_q25   = array.percentile_nearest_rank(bin_vols, 25)
+    hvn_near  = false
+    lvn_near  = false
+    for b = 0 to vp_bins - 1
+        bin_mid = lo_range + (b + 0.5) * bin_size
+        if math.abs(close - bin_mid) < bin_size * 1.5
+            if array.get(bin_vols, b) >= vol_q75
+                hvn_near := true
+            if array.get(bin_vols, b) <= vol_q25
+                lvn_near := true
+
+    [poc_price, vah_price, val_price, hvn_near, lvn_near]
+
+[poc, vah, val, hvn_near, lvn_near] = f_vp_levels()
+
+// ─── CUMULATIVE VOLUME DELTA ──────────────────────────────────────────────────
+// Estimate buying vs selling volume using the close position within the bar range.
+// buy_vol  ≈ volume × (close − low)  / (high − low)
+// sell_vol ≈ volume × (high − close) / (high − low)
+// delta    = buy_vol − sell_vol
+
+bar_range  = high - low
+buy_vol    = bar_range > 0 ? volume * (close - low)  / bar_range : volume * 0.5
+sell_vol   = bar_range > 0 ? volume * (high - close) / bar_range : volume * 0.5
+bar_delta  = buy_vol - sell_vol
+
+cvd        = ta.cum(bar_delta)
+cvd_sma    = ta.sma(cvd, cvd_length)
+
+cvd_trend  = cvd > cvd_sma ? "bullish" : cvd < cvd_sma ? "bearish" : "neutral"
+
+// ─── ABSORPTION DETECTION ────────────────────────────────────────────────────
+// High volume + low price movement = institutional absorption
+
+atr14      = ta.atr(14)
+avg_vol    = ta.sma(volume, vp_lookback)
+absorption = volume >= avg_vol * abs_vol_mult and bar_range <= atr14 * abs_range_pct
+
+// ─── BALANCE / IMBALANCE STATE ───────────────────────────────────────────────
+// A market is IN BALANCE when price oscillates between VAH and VAL.
+// It is IMBALANCED when it has been outside the value area consistently.
+
+bars_above_vah = 0
+bars_below_val = 0
+for i = 0 to vp_lookback - 1
+    if close[i] > vah
+        bars_above_vah += 1
+    if close[i] < val
+        bars_below_val += 1
+
+imbalance_threshold = int(vp_lookback * 0.6)   // 60% of bars outside VA = imbalanced
+
+balance_state =
+    bars_above_vah >= imbalance_threshold ? "imbalanced_bullish" :
+    bars_below_val >= imbalance_threshold ? "imbalanced_bearish" :
+    close > vah and close[1] <= vah[1]    ? "breaking_high"      :
+    close < val and close[1] >= val[1]    ? "breaking_low"       :
+    "in_balance"
+
+// ─── DELTA DIVERGENCE ────────────────────────────────────────────────────────
+// Price makes new high but CVD doesn't confirm → bearish divergence
+// Price makes new low  but CVD doesn't confirm → bullish divergence
+
+recent_hi     = ta.highest(close, div_lookback)
+recent_lo     = ta.lowest(close,  div_lookback)
+cvd_hi        = ta.highest(cvd,   div_lookback)
+cvd_lo        = ta.lowest(cvd,    div_lookback)
+
+bearish_div   = close >= recent_hi and cvd < cvd_hi[1]
+bullish_div   = close <= recent_lo and cvd > cvd_lo[1]
+
+delta_divergence = bearish_div ? "bearish_div" : bullish_div ? "bullish_div" : "none"
+
+// ─── SIGNAL LOGIC ────────────────────────────────────────────────────────────
+// Mirror of Fabervaale's seven core signal types.
+
+at_poc = math.abs(close - poc) <= atr14 * 0.5
+at_vah = math.abs(close - vah) <= atr14 * 0.5
+at_val = math.abs(close - val) <= atr14 * 0.5
+
+// Responsive signals (price returning to value)
+poc_rejection_long  = at_poc and bar_delta > 0    and close > open and balance_state == "in_balance"
+poc_rejection_short = at_poc and bar_delta < 0    and close < open and balance_state == "in_balance"
+val_bounce_long     = at_val and bar_delta > 0    and close > open
+vah_rejection_short = at_vah and bar_delta < 0    and close < open
+
+// Initiative signals (price pushing into new territory)
+initiative_long     = balance_state == "breaking_high" and cvd_trend == "bullish" and volume >= avg_vol * 1.3
+initiative_short    = balance_state == "breaking_low"  and cvd_trend == "bearish" and volume >= avg_vol * 1.3
+
+// Delta divergence signals (fade)
+div_short           = bearish_div and balance_state != "imbalanced_bullish"
+div_long            = bullish_div  and balance_state != "imbalanced_bearish"
+
+// Absorption signals
+absorption_long     = absorption and at_val and bar_delta > 0
+absorption_short    = absorption and at_vah and bar_delta < 0
+
+// ─── SIGNAL PRIORITY ─────────────────────────────────────────────────────────
+// Emit only one signal per bar (highest-priority first).
+
+signal_type =
+    initiative_long     ? "initiative_breakout_long"  :
+    initiative_short    ? "initiative_breakout_short" :
+    div_short           ? "delta_div_short"           :
+    div_long            ? "delta_div_long"            :
+    absorption_long     ? "absorption_long"           :
+    absorption_short    ? "absorption_short"          :
+    val_bounce_long     ? "val_bounce_long"           :
+    vah_rejection_short ? "vah_rejection_short"       :
+    poc_rejection_long  ? "poc_rejection_long"        :
+    poc_rejection_short ? "poc_rejection_short"       :
+    ""
+
+any_signal = signal_type != ""
+
+// ─── WEBHOOK PAYLOAD ─────────────────────────────────────────────────────────
+// TradingView alert message — paste this entire block as the "Message" in your alert.
+// The Python server parses it as JSON.
+
+if any_signal
+    payload = '{'                                                       +
+        '"ticker":"'         + syminfo.ticker                  + '",'  +
+        '"price":'           + str.tostring(close, "#.##")     + ','   +
+        '"poc":'             + str.tostring(poc,   "#.##")     + ','   +
+        '"vah":'             + str.tostring(vah,   "#.##")     + ','   +
+        '"val":'             + str.tostring(val,   "#.##")     + ','   +
+        '"cvd":'             + str.tostring(cvd,   "#.##")     + ','   +
+        '"cvd_trend":"'      + cvd_trend                       + '",'  +
+        '"volume":'          + str.tostring(volume,"#")        + ','   +
+        '"avg_volume":'      + str.tostring(avg_vol,"#.##")    + ','   +
+        '"balance_state":"'  + balance_state                   + '",'  +
+        '"signal_type":"'    + signal_type                     + '",'  +
+        '"absorption":'      + str.tostring(absorption)        + ','   +
+        '"delta_divergence":"' + delta_divergence              + '",'  +
+        '"hvn_near":'        + str.tostring(hvn_near)          + ','   +
+        '"lvn_near":'        + str.tostring(lvn_near)          + ','   +
+        '"timeframe":"'      + timeframe.period                + '"'   +
+        '}'
+    alert(payload, alert.freq_once_per_bar_close)
+
+// ─── VISUAL OVERLAYS ─────────────────────────────────────────────────────────
+
+poc_col = color.new(color.yellow,  0)
+vah_col = color.new(color.green,   30)
+val_col = color.new(color.red,     30)
+
+poc_line = show_poc     ? plot(poc, "POC", poc_col, 2, plot.style_line) : na
+vah_line = show_vah_val ? plot(vah, "VAH", vah_col, 1, plot.style_line) : na
+val_line = show_vah_val ? plot(val, "VAL", val_col, 1, plot.style_line) : na
+
+// Value area fill
+fill(vah_line, val_line, color=color.new(color.gray, 90), title="Value Area")
+
+// Signal labels
+if show_signals and any_signal
+    lbl_color = str.contains(signal_type, "long")  ? color.green :
+                str.contains(signal_type, "short") ? color.red   : color.gray
+    lbl_text  = str.upper(str.replace(signal_type, "_", " "))
+    label.new(
+        bar_index, low * 0.9995,
+        text     = lbl_text,
+        color    = lbl_color,
+        textcolor= color.white,
+        style    = label.style_label_up,
+        size     = size.tiny
+    )
+
+// Absorption markers
+plotshape(
+    absorption and show_signals,
+    title    = "Absorption",
+    style    = shape.diamond,
+    location = location.belowbar,
+    color    = color.new(color.orange, 0),
+    size     = size.small
+)
+
+// Delta divergence markers
+plotshape(
+    bearish_div and show_signals,
+    title    = "Bearish Div",
+    style    = shape.xcross,
+    location = location.abovebar,
+    color    = color.new(color.red, 0),
+    size     = size.small
+)
+plotshape(
+    bullish_div and show_signals,
+    title    = "Bullish Div",
+    style    = shape.xcross,
+    location = location.belowbar,
+    color    = color.new(color.green, 0),
+    size     = size.small
+)
+
+// Balance state background tint
+bgcolor(
+    balance_state == "imbalanced_bullish" ? color.new(color.green, 95) :
+    balance_state == "imbalanced_bearish" ? color.new(color.red,   95) :
+    na,
+    title = "Imbalance Background"
+)
+
+// ─── CVD PANEL ───────────────────────────────────────────────────────────────
+
+cvd_col = cvd >= 0 ? color.new(color.green, 30) : color.new(color.red, 30)
+plot(
+    show_cvd ? cvd : na,
+    "CVD",
+    cvd_col,
+    2,
+    plot.style_area,
+    display = display.pane
+)
+plot(
+    show_cvd ? cvd_sma : na,
+    "CVD SMA",
+    color.white,
+    1,
+    display = display.pane
+)
+
+// ─── TABLE: LIVE AMT DASHBOARD ───────────────────────────────────────────────
+
+var table dashboard = table.new(
+    position.top_right, 2, 7,
+    bgcolor       = color.new(color.black, 70),
+    border_width  = 1,
+    border_color  = color.new(color.gray, 50)
+)
+
+f_cell(row, col, txt, txt_col) =>
+    table.cell(dashboard, col, row, txt,
+               text_color = txt_col,
+               text_size  = size.small,
+               bgcolor    = color.new(color.black, 70))
+
+f_cell(0, 0, "⚙ AMT GOLD",         color.white)
+f_cell(0, 1, syminfo.ticker,         color.yellow)
+f_cell(1, 0, "State",                color.gray)
+f_cell(1, 1, balance_state,
+    balance_state == "imbalanced_bullish" ? color.green :
+    balance_state == "imbalanced_bearish" ? color.red   : color.yellow)
+f_cell(2, 0, "POC",                  color.gray)
+f_cell(2, 1, str.tostring(poc, "#.##"), color.yellow)
+f_cell(3, 0, "VAH",                  color.gray)
+f_cell(3, 1, str.tostring(vah, "#.##"), color.green)
+f_cell(4, 0, "VAL",                  color.gray)
+f_cell(4, 1, str.tostring(val, "#.##"), color.red)
+f_cell(5, 0, "CVD",                  color.gray)
+f_cell(5, 1, cvd_trend,
+    cvd_trend == "bullish" ? color.green :
+    cvd_trend == "bearish" ? color.red   : color.white)
+f_cell(6, 0, "Signal",               color.gray)
+f_cell(6, 1, signal_type == "" ? "—" : signal_type,
+    any_signal ? color.orange : color.gray)
