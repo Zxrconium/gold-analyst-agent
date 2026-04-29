@@ -246,9 +246,9 @@ poc_col = color.new(color.yellow, 0)
 vah_col = color.new(color.green,  30)
 val_col = color.new(color.red,    30)
 
-poc_line = show_poc     ? plot(poc, "POC", poc_col, 2, plot.style_line) : na
-vah_line = show_vah_val ? plot(vah, "VAH", vah_col, 1, plot.style_line) : na
-val_line = show_vah_val ? plot(val, "VAL", val_col, 1, plot.style_line) : na
+poc_line = plot(show_poc     ? poc : na, "POC", poc_col, 2, plot.style_line)
+vah_line = plot(show_vah_val ? vah : na, "VAH", vah_col, 1, plot.style_line)
+val_line = plot(show_vah_val ? val : na, "VAL", val_col, 1, plot.style_line)
 
 fill(vah_line, val_line, color=color.new(color.gray, 90), title="Value Area")
 
