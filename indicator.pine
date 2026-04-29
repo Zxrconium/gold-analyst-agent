@@ -24,9 +24,9 @@ indicator(title="Gold AMT Analyst - Fabervaale Framework", shorttitle="AMT Gold"
 // --- INPUTS ------------------------------------------------------------------
 
 // Volume Profile
-vp_lookback    = input.int(50,   "VP Lookback (bars)",         minval=10, maxval=200, group="Volume Profile")
+vp_lookback    = input.int(30,   "VP Lookback (bars)",         minval=10, maxval=100, group="Volume Profile")
 value_area_pct = input.float(70, "Value Area %",               minval=50, maxval=95,  group="Volume Profile")
-vp_bins        = input.int(24,   "VP Price Bins",              minval=10, maxval=50,  group="Volume Profile")
+vp_bins        = input.int(20,   "VP Price Bins",              minval=10, maxval=40,  group="Volume Profile")
 
 // CVD
 cvd_length     = input.int(20,   "CVD Smoothing Length",       minval=1,  maxval=50,  group="CVD")
@@ -52,68 +52,71 @@ show_cvd     = input.bool(true, "Show CVD Panel",    group="Display")
 show_signals = input.bool(true, "Show Signal Labels", group="Display")
 
 // --- VOLUME PROFILE APPROXIMATION --------------------------------------------
-// Bucket the last vp_lookback bars into vp_bins price bins and accumulate
-// volume. This is a fixed-range VP anchored to the lookback window.
+// VP is recalculated only on bar close (barstate.isconfirmed) and the
+// results are stored in var variables so they persist into the next bar.
+// This avoids recalculating on every intra-bar tick, which was the source
+// of the RE10022 timeout.
 
-f_vp_levels() =>
+var float[] _bin_vols = array.new_float(40, 0.0)  // pre-alloc for max bins
+
+var float poc      = close
+var float vah      = close
+var float val      = close
+var bool  hvn_near = false
+var bool  lvn_near = false
+
+if barstate.isconfirmed
     lo_range = ta.lowest(low,   vp_lookback)
     hi_range = ta.highest(high, vp_lookback)
-    bin_size = (hi_range - lo_range) / vp_bins
+    bin_size = hi_range - lo_range > 0 ? (hi_range - lo_range) / vp_bins : 1.0
 
-    var float[] bin_vols = array.new_float(vp_bins, 0.0)
-    array.fill(bin_vols, 0.0)
+    // Reset bins
+    for b = 0 to vp_bins - 1
+        array.set(_bin_vols, b, 0.0)
 
+    // Accumulate volume into bins
     for i = 0 to vp_lookback - 1
         bar_mid = (high[i] + low[i]) / 2
         bin_idx = int(math.min(math.floor((bar_mid - lo_range) / bin_size), vp_bins - 1))
         if bin_idx >= 0
-            array.set(bin_vols, bin_idx, array.get(bin_vols, bin_idx) + volume[i])
+            array.set(_bin_vols, bin_idx, array.get(_bin_vols, bin_idx) + volume[i])
 
-    // POC - bin with maximum volume
-    max_vol = array.max(bin_vols)
-    poc_bin = 0
-    for b = 0 to vp_bins - 1
-        if array.get(bin_vols, b) >= max_vol
-            poc_bin := b
-            break
-    poc_price = lo_range + (poc_bin + 0.5) * bin_size
+    // POC - O(1) lookup via array.indexof instead of a loop
+    max_vol = array.max(_bin_vols)
+    poc_bin = array.indexof(_bin_vols, max_vol)
+    poc    := lo_range + (poc_bin + 0.5) * bin_size
 
-    // Value Area - expand outward from POC until value_area_pct% of volume captured
-    total_vol = array.sum(bin_vols)
+    // Value Area - expand outward from POC, capped at vp_bins iterations
+    total_vol = array.sum(_bin_vols)
     target    = total_vol * (value_area_pct / 100)
-    captured  = array.get(bin_vols, poc_bin)
+    captured  = array.get(_bin_vols, poc_bin)
     lo_bin    = poc_bin
     hi_bin    = poc_bin
+    iters     = 0
 
-    while captured < target and (lo_bin > 0 or hi_bin < vp_bins - 1)
-        lo_vol = lo_bin > 0            ? array.get(bin_vols, lo_bin - 1) : 0.0
-        hi_vol = hi_bin < vp_bins - 1  ? array.get(bin_vols, hi_bin + 1) : 0.0
+    while captured < target and (lo_bin > 0 or hi_bin < vp_bins - 1) and iters < vp_bins
+        lo_vol = lo_bin > 0            ? array.get(_bin_vols, lo_bin - 1) : 0.0
+        hi_vol = hi_bin < vp_bins - 1  ? array.get(_bin_vols, hi_bin + 1) : 0.0
         if hi_vol >= lo_vol
             hi_bin   := hi_bin + 1
             captured += hi_vol
         else
             lo_bin   := lo_bin - 1
             captured += lo_vol
+        iters += 1
 
-    vah_price = lo_range + (hi_bin + 1) * bin_size
-    val_price = lo_range + lo_bin       * bin_size
+    vah := lo_range + (hi_bin + 1) * bin_size
+    val := lo_range + lo_bin        * bin_size
 
-    // HVN / LVN detection - bins in top/bottom quartile by volume
-    vol_q75  = array.percentile_nearest_rank(bin_vols, 75)
-    vol_q25  = array.percentile_nearest_rank(bin_vols, 25)
-    hvn_near = false
-    lvn_near = false
-    for b = 0 to vp_bins - 1
-        bin_mid = lo_range + (b + 0.5) * bin_size
-        if math.abs(close - bin_mid) < bin_size * 1.5
-            if array.get(bin_vols, b) >= vol_q75
-                hvn_near := true
-            if array.get(bin_vols, b) <= vol_q25
-                lvn_near := true
-
-    [poc_price, vah_price, val_price, hvn_near, lvn_near]
-
-[poc, vah, val, hvn_near, lvn_near] = f_vp_levels()
+    // HVN / LVN - O(1): check only the single bin that price occupies
+    cur_bin = int(math.min(math.floor((close - lo_range) / bin_size), vp_bins - 1))
+    if cur_bin >= 0
+        cur_vol  = array.get(_bin_vols, cur_bin)
+        hvn_near := cur_vol >= max_vol * 0.75
+        lvn_near := cur_vol <= max_vol * 0.25
+    else
+        hvn_near := false
+        lvn_near := false
 
 // --- CUMULATIVE VOLUME DELTA -------------------------------------------------
 // Estimate buying vs selling volume using close position within the bar range.
