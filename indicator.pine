@@ -23,28 +23,26 @@ indicator(title="Gold AMT Analyst - Fabervaale Framework", shorttitle="AMT Gold"
 
 // --- INPUTS ------------------------------------------------------------------
 
-// Volume Profile
-vp_lookback    = input.int(30,   "VP Lookback (bars)",         minval=10, maxval=100, group="Volume Profile")
+// Volume Profile - capped at 20 bars / 10 bins to avoid RE10022 timeout
+vp_lookback    = input.int(20,   "VP Lookback (bars)",         minval=5,  maxval=20,  group="Volume Profile")
 value_area_pct = input.float(70, "Value Area %",               minval=50, maxval=95,  group="Volume Profile")
-vp_bins        = input.int(20,   "VP Price Bins",              minval=10, maxval=40,  group="Volume Profile")
+vp_bins        = input.int(10,   "VP Price Bins",              minval=5,  maxval=10,  group="Volume Profile")
 
 // CVD
 cvd_length     = input.int(20,   "CVD Smoothing Length",       minval=1,  maxval=50,  group="CVD")
 
 // Signal thresholds
-abs_vol_mult   = input.float(1.8, "Absorption Vol Multiplier", minval=1.0, maxval=5.0, group="Signals",
-     tooltip="Bar volume must exceed avg x this to qualify as absorption")
-abs_range_pct  = input.float(0.3, "Absorption Range % of ATR", minval=0.1, maxval=1.0, group="Signals",
-     tooltip="Bar range must be less than this x ATR to qualify as absorption")
+abs_vol_mult   = input.float(1.8, "Absorption Vol Multiplier", minval=1.0, maxval=5.0, group="Signals", tooltip="Bar volume must exceed avg x this to qualify as absorption")
+abs_range_pct  = input.float(0.3, "Absorption Range % of ATR", minval=0.1, maxval=1.0, group="Signals", tooltip="Bar range must be less than this x ATR to qualify as absorption")
 div_lookback   = input.int(5,    "Delta Divergence Lookback",  minval=2,  maxval=20,  group="Signals")
 
 // Webhook
 webhook_url_placeholder = input.string("https://your-server.com/webhook?secret=YOUR_SECRET", "Webhook URL (replace with your server URL)", group="Webhook", tooltip="Paste your ngrok / VPS URL here. Alerts -> Message contains the JSON payload.")
 
 // Display
-show_poc     = input.bool(true, "Show POC",          group="Display")
-show_vah_val = input.bool(true, "Show VAH/VAL",      group="Display")
-show_cvd     = input.bool(true, "Show CVD Panel",    group="Display")
+show_poc     = input.bool(true, "Show POC",           group="Display")
+show_vah_val = input.bool(true, "Show VAH/VAL",       group="Display")
+show_cvd     = input.bool(true, "Show CVD Panel",     group="Display")
 show_signals = input.bool(true, "Show Signal Labels", group="Display")
 
 // --- VOLUME PROFILE APPROXIMATION --------------------------------------------
@@ -53,7 +51,7 @@ show_signals = input.bool(true, "Show Signal Labels", group="Display")
 // This avoids recalculating on every intra-bar tick, which was the source
 // of the RE10022 timeout.
 
-var float[] _bin_vols = array.new_float(40, 0.0)  // pre-alloc for max bins
+var float[] _bin_vols = array.new_float(10, 0.0)
 
 var float poc      = close
 var float vah      = close
@@ -91,8 +89,8 @@ if barstate.isconfirmed
     iters     = 0
 
     while captured < target and (lo_bin > 0 or hi_bin < vp_bins - 1) and iters < vp_bins
-        lo_vol = lo_bin > 0            ? array.get(_bin_vols, lo_bin - 1) : 0.0
-        hi_vol = hi_bin < vp_bins - 1  ? array.get(_bin_vols, hi_bin + 1) : 0.0
+        lo_vol = lo_bin > 0           ? array.get(_bin_vols, lo_bin - 1) : 0.0
+        hi_vol = hi_bin < vp_bins - 1 ? array.get(_bin_vols, hi_bin + 1) : 0.0
         if hi_vol >= lo_vol
             hi_bin   := hi_bin + 1
             captured += hi_vol
@@ -133,8 +131,8 @@ cvd_trend = cvd > cvd_sma ? "bullish" : cvd < cvd_sma ? "bearish" : "neutral"
 // --- ABSORPTION DETECTION ----------------------------------------------------
 // High volume + low price movement = institutional absorption
 
-atr14     = ta.atr(14)
-avg_vol   = ta.sma(volume, vp_lookback)
+atr14      = ta.atr(14)
+avg_vol    = ta.sma(volume, vp_lookback)
 absorption = volume >= avg_vol * abs_vol_mult and bar_range <= atr14 * abs_range_pct
 
 // --- BALANCE / IMBALANCE STATE -----------------------------------------------
@@ -220,12 +218,9 @@ fill(vah_line, val_line, color=color.new(color.gray, 90), title="Value Area")
 
 // Signal labels
 if show_signals and any_signal
-    lbl_color = str.contains(signal_type, "long")  ? color.green :
-                str.contains(signal_type, "short") ? color.red   : color.gray
+    lbl_color = str.contains(signal_type, "long") ? color.green : str.contains(signal_type, "short") ? color.red : color.gray
     lbl_text  = str.upper(str.replace(signal_type, "_", " "))
-    label.new(bar_index, low * 0.9995,
-              text=lbl_text, color=lbl_color, textcolor=color.white,
-              style=label.style_label_up, size=size.tiny)
+    label.new(bar_index, low * 0.9995, text=lbl_text, color=lbl_color, textcolor=color.white, style=label.style_label_up, size=size.tiny)
 
 // Absorption markers
 plotshape(absorption and show_signals, title="Absorption", style=shape.diamond, location=location.belowbar, color=color.new(color.orange, 0), size=size.small)
@@ -250,17 +245,17 @@ var table dashboard = table.new(position.top_right, 2, 7, bgcolor=color.new(colo
 f_cell(row, col, txt, txt_col) =>
     table.cell(dashboard, col, row, txt, text_color=txt_col, text_size=size.small, bgcolor=color.new(color.black, 70))
 
-f_cell(0, 0, "AMT GOLD", color.white)
-f_cell(0, 1, syminfo.ticker, color.yellow)
-f_cell(1, 0, "State", color.gray)
-f_cell(1, 1, balance_state, balance_state == "imbalanced_bullish" ? color.green : balance_state == "imbalanced_bearish" ? color.red : color.yellow)
-f_cell(2, 0, "POC", color.gray)
+f_cell(0, 0, "AMT GOLD",      color.white)
+f_cell(0, 1, syminfo.ticker,  color.yellow)
+f_cell(1, 0, "State",         color.gray)
+f_cell(1, 1, balance_state,   balance_state == "imbalanced_bullish" ? color.green : balance_state == "imbalanced_bearish" ? color.red : color.yellow)
+f_cell(2, 0, "POC",           color.gray)
 f_cell(2, 1, str.tostring(poc, "#.##"), color.yellow)
-f_cell(3, 0, "VAH", color.gray)
+f_cell(3, 0, "VAH",           color.gray)
 f_cell(3, 1, str.tostring(vah, "#.##"), color.green)
-f_cell(4, 0, "VAL", color.gray)
+f_cell(4, 0, "VAL",           color.gray)
 f_cell(4, 1, str.tostring(val, "#.##"), color.red)
-f_cell(5, 0, "CVD", color.gray)
-f_cell(5, 1, cvd_trend, cvd_trend == "bullish" ? color.green : cvd_trend == "bearish" ? color.red : color.white)
-f_cell(6, 0, "Signal", color.gray)
+f_cell(5, 0, "CVD",           color.gray)
+f_cell(5, 1, cvd_trend,       cvd_trend == "bullish" ? color.green : cvd_trend == "bearish" ? color.red : color.white)
+f_cell(6, 0, "Signal",        color.gray)
 f_cell(6, 1, any_signal ? signal_type : "none", any_signal ? color.orange : color.gray)
