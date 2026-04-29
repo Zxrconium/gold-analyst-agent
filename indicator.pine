@@ -152,12 +152,17 @@ for i = 0 to vp_lookback - 1
 
 imbalance_threshold = int(vp_lookback * 0.6)
 
-balance_state =
-    bars_above_vah >= imbalance_threshold ? "imbalanced_bullish" :
-    bars_below_val >= imbalance_threshold ? "imbalanced_bearish" :
-    close > vah and close[1] <= vah[1]    ? "breaking_high"      :
-    close < val and close[1] >= val[1]    ? "breaking_low"       :
-    "in_balance"
+var string balance_state = "in_balance"
+if bars_above_vah >= imbalance_threshold
+    balance_state := "imbalanced_bullish"
+else if bars_below_val >= imbalance_threshold
+    balance_state := "imbalanced_bearish"
+else if close > vah and close[1] <= vah[1]
+    balance_state := "breaking_high"
+else if close < val and close[1] >= val[1]
+    balance_state := "breaking_low"
+else
+    balance_state := "in_balance"
 
 // --- DELTA DIVERGENCE --------------------------------------------------------
 // Price makes new high but CVD doesn't confirm -> bearish divergence
@@ -201,18 +206,29 @@ absorption_short = absorption and at_vah and bar_delta < 0
 // --- SIGNAL PRIORITY ---------------------------------------------------------
 // Emit only one signal per bar (highest-priority first).
 
-signal_type =
-    initiative_long     ? "initiative_breakout_long"  :
-    initiative_short    ? "initiative_breakout_short" :
-    div_short           ? "delta_div_short"           :
-    div_long            ? "delta_div_long"            :
-    absorption_long     ? "absorption_long"           :
-    absorption_short    ? "absorption_short"          :
-    val_bounce_long     ? "val_bounce_long"           :
-    vah_rejection_short ? "vah_rejection_short"       :
-    poc_rejection_long  ? "poc_rejection_long"        :
-    poc_rejection_short ? "poc_rejection_short"       :
-    ""
+var string signal_type = ""
+if initiative_long
+    signal_type := "initiative_breakout_long"
+else if initiative_short
+    signal_type := "initiative_breakout_short"
+else if div_short
+    signal_type := "delta_div_short"
+else if div_long
+    signal_type := "delta_div_long"
+else if absorption_long
+    signal_type := "absorption_long"
+else if absorption_short
+    signal_type := "absorption_short"
+else if val_bounce_long
+    signal_type := "val_bounce_long"
+else if vah_rejection_short
+    signal_type := "vah_rejection_short"
+else if poc_rejection_long
+    signal_type := "poc_rejection_long"
+else if poc_rejection_short
+    signal_type := "poc_rejection_short"
+else
+    signal_type := ""
 
 any_signal = signal_type != ""
 
