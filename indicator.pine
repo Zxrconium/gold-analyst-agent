@@ -39,11 +39,7 @@ abs_range_pct  = input.float(0.3, "Absorption Range % of ATR", minval=0.1, maxva
 div_lookback   = input.int(5,    "Delta Divergence Lookback",  minval=2,  maxval=20,  group="Signals")
 
 // Webhook
-webhook_url_placeholder = input.string(
-     "https://your-server.com/webhook?secret=YOUR_SECRET",
-     "Webhook URL (replace with your server URL)",
-     group="Webhook",
-     tooltip="Paste your ngrok / VPS URL here. Alerts -> Message contains the JSON payload.")
+webhook_url_placeholder = input.string("https://your-server.com/webhook?secret=YOUR_SECRET", "Webhook URL (replace with your server URL)", group="Webhook", tooltip="Paste your ngrok / VPS URL here. Alerts -> Message contains the JSON payload.")
 
 // Display
 show_poc     = input.bool(true, "Show POC",          group="Display")
@@ -232,23 +228,14 @@ if show_signals and any_signal
               style=label.style_label_up, size=size.tiny)
 
 // Absorption markers
-plotshape(absorption and show_signals, title="Absorption",
-     style=shape.diamond, location=location.belowbar,
-     color=color.new(color.orange, 0), size=size.small)
+plotshape(absorption and show_signals, title="Absorption", style=shape.diamond, location=location.belowbar, color=color.new(color.orange, 0), size=size.small)
 
 // Delta divergence markers
-plotshape(bearish_div and show_signals, title="Bearish Div",
-     style=shape.xcross, location=location.abovebar,
-     color=color.new(color.red, 0), size=size.small)
-
-plotshape(bullish_div and show_signals, title="Bullish Div",
-     style=shape.xcross, location=location.belowbar,
-     color=color.new(color.green, 0), size=size.small)
+plotshape(bearish_div and show_signals, title="Bearish Div", style=shape.xcross, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+plotshape(bullish_div and show_signals, title="Bullish Div", style=shape.xcross, location=location.belowbar, color=color.new(color.green, 0), size=size.small)
 
 // Balance state background tint
-bgcolor(balance_state == "imbalanced_bullish" ? color.new(color.green, 95) :
-        balance_state == "imbalanced_bearish" ? color.new(color.red,   95) :
-        na, title="Imbalance Background")
+bgcolor(balance_state == "imbalanced_bullish" ? color.new(color.green, 95) : balance_state == "imbalanced_bearish" ? color.new(color.red, 95) : na, title="Imbalance Background")
 
 // --- CVD PANEL ---------------------------------------------------------------
 
@@ -258,30 +245,22 @@ plot(show_cvd ? cvd_sma : na, "CVD SMA", color.white, 1,                  displa
 
 // --- TABLE: LIVE AMT DASHBOARD -----------------------------------------------
 
-var table dashboard = table.new(
-     position.top_right, 2, 7,
-     bgcolor=color.new(color.black, 70), border_width=1, border_color=color.new(color.gray, 50))
+var table dashboard = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 70), border_width=1, border_color=color.new(color.gray, 50))
 
 f_cell(row, col, txt, txt_col) =>
-    table.cell(dashboard, col, row, txt,
-               text_color=txt_col, text_size=size.small, bgcolor=color.new(color.black, 70))
+    table.cell(dashboard, col, row, txt, text_color=txt_col, text_size=size.small, bgcolor=color.new(color.black, 70))
 
-f_cell(0, 0, "AMT GOLD",      color.white)
-f_cell(0, 1, syminfo.ticker,  color.yellow)
-f_cell(1, 0, "State",         color.gray)
-f_cell(1, 1, balance_state,
-     balance_state == "imbalanced_bullish" ? color.green :
-     balance_state == "imbalanced_bearish" ? color.red   : color.yellow)
-f_cell(2, 0, "POC",           color.gray)
+f_cell(0, 0, "AMT GOLD", color.white)
+f_cell(0, 1, syminfo.ticker, color.yellow)
+f_cell(1, 0, "State", color.gray)
+f_cell(1, 1, balance_state, balance_state == "imbalanced_bullish" ? color.green : balance_state == "imbalanced_bearish" ? color.red : color.yellow)
+f_cell(2, 0, "POC", color.gray)
 f_cell(2, 1, str.tostring(poc, "#.##"), color.yellow)
-f_cell(3, 0, "VAH",           color.gray)
+f_cell(3, 0, "VAH", color.gray)
 f_cell(3, 1, str.tostring(vah, "#.##"), color.green)
-f_cell(4, 0, "VAL",           color.gray)
+f_cell(4, 0, "VAL", color.gray)
 f_cell(4, 1, str.tostring(val, "#.##"), color.red)
-f_cell(5, 0, "CVD",           color.gray)
-f_cell(5, 1, cvd_trend,
-     cvd_trend == "bullish" ? color.green :
-     cvd_trend == "bearish" ? color.red   : color.white)
-f_cell(6, 0, "Signal",        color.gray)
-f_cell(6, 1, any_signal ? signal_type : "none",
-     any_signal ? color.orange : color.gray)
+f_cell(5, 0, "CVD", color.gray)
+f_cell(5, 1, cvd_trend, cvd_trend == "bullish" ? color.green : cvd_trend == "bearish" ? color.red : color.white)
+f_cell(6, 0, "Signal", color.gray)
+f_cell(6, 1, any_signal ? signal_type : "none", any_signal ? color.orange : color.gray)
